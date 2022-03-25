@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  Architecture:
+    Type: String
+    Default: 'x86_64'
+  PythonVersion:
+    Type: String
+    Default: 'python3.9'
+Resources:
+  LambdaFunc:
+    Properties:
+      Architectures:
+        - !Ref Architecture
+      InlineCode: |
+        import subprocess
+        from pprint import pprint
+        
+        
+        def lambda_handler(event, context):
+            pf = subprocess.run("pip freeze --all", capture_output=True, shell=True)
+            out = {}
+            for l in pf.stdout.decode().splitlines():
+                p, v = l.strip().split('==')
+                out[p] = v
+            pprint(out)
+            return out
+        
+        
+        if __name__ == '__main__':
+            lambda_handler(None, None)
+      MemorySize: 128
+      PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/ent/ent-permissions-boundary'
+      Runtime: !Ref PythonVersion
+      Handler: index.lambda_handler
+      Timeout: 60
+    Type: AWS::Serverless::Function
+
+Outputs:
+  LambdaFuncArn:
+    Value: !GetAtt LambdaFunc.Arn
+Transform: AWS::Serverless-2016-10-31

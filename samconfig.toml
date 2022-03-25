@@ -1,0 +1,11 @@
+version = 0.1
+[default]
+[default.deploy]
+[default.deploy.parameters]
+stack_name = "get-lambda-python-pkg-versions2"
+s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-1mrybi0nff7pz"
+s3_prefix = "get-lambda-python-pkg-versions2"
+region = "us-east-2"
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "Architecture=\"x86_64\" PythonVersion=\"python3.9\""
+image_repositories = []
