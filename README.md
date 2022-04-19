@@ -5,6 +5,6 @@ Creates a temporary lambda function that returns the current version of the pack
 
 ### Usage
 ```shell
-git fetch ./get_pkgs.sh
+./get_pkgs.sh
 
 ```
