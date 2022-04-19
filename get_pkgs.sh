@@ -2,13 +2,10 @@
 
 source .env
 
-if [ -z "$S3_BUCKET" ] || [ -z "$S3_PREFIX" ] || [ -z "$STACK_NAME" ]; then
-  echo "Error: .env file is missing variables"
-  exit 1
-fi
-
 trap cleanup INT
 CLEANING_UP=0
+CLEANUP_STACK_NAME=
+CLEANUP_REGION=
 function cleanup() {
   if [ $CLEANING_UP -eq 0 ]; then
     CLEANING_UP=1
@@ -19,37 +16,32 @@ function cleanup() {
   fi
 }
 function _cleanup() {
-  echo "Cleaning up"
-  wait_stack
-  local temp_file
-  temp_file=$(mktemp)
-  cat > "$temp_file" << EOF
-version = 0.1
-[default]
-[default.deploy]
-[default.deploy.parameters]
-stack_name = "$STACK_NAME"
-s3_bucket = "$S3_BUCKET"
-s3_prefix = "$S3_PREFIX"
-region = "REGION"
-confirm_changeset = false
-capabilities = "$CAPABILITIES"
-EOF
-  sam delete --no-prompts --region "$REGION" --stack-name "$STACK_NAME" --config-file "$temp_file"
-  aws s3 rm --recursive "s3://${S3_BUCKET}/${S3_PREFIX}"
-  rm -f "$temp_file"
+
+  if [[ -n "$CLEANUP_STACK_NAME" ]]; then
+    wait_stack "$CLEANUP_STACK_NAME" "$CLEANUP_REGION"
+    delete_stack "$CLEANUP_STACK_NAME" "$CLEANUP_REGION"
+  fi
   exit 0
 }
 
+function delete_stack() {
+  echo "Cleaning up stack $1 in $2"
+  aws cloudformation delete-stack --stack-name "$1" --region "$2"
+  wait_stack "$@"
+
+  CLEANUP_REGION=
+  CLEANUP_STACK_NAME=
+}
+
 function get_stack_status() {
-  aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query 'Stacks[][].StackStatus' --output text
+  aws cloudformation describe-stacks --stack-name "$1" --region "$2" --query 'Stacks[][].StackStatus' --output text
 }
 
 function wait_stack() {
   local list first_wait
-  list="UPDATE_COMPLETE CREATE_COMPLETE ROLLBACK_COMPLETE"
+  list="UPDATE_COMPLETE CREATE_COMPLETE ROLLBACK_COMPLETE DELETE_COMPLETE"
   first_wait=0
-  while ! [[ $list =~ (^|[[:space:]])$(get_stack_status)($|[[:space:]]) ]]; do
+  while ! [[ $list =~ (^|[[:space:]])$(get_stack_status "$@")($|[[:space:]]) ]]; do
     if [ $first_wait -eq 0 ]; then
       first_wait=1
       stdbuf -o0 echo -n "Waiting for update to complete..."
@@ -60,32 +52,49 @@ function wait_stack() {
   done
   stdbuf -o0 echo "Done"
 }
-FIRST=1
 
-for po in "${PLATFORMS[@]}"; do
-  echo "Override: $po"
-  read -r ARCH PY_VERSION <<< "$po"
-  if [ $FIRST -eq 1 ]; then
-    FIRST=0
-    sam deploy --parameter-overrides Architecture="$ARCH" PythonVersion="$PY_VERSION" \
-      --region "$REGION" \
-      --capabilities "$CAPABILITIES" \
-      --s3-bucket "$S3_BUCKET" \
-      --s3-prefix "$S3_PREFIX" \
-      --stack-name "$STACK_NAME" \
-      --no-fail-on-empty-changeset
-  else
-    aws cloudformation update-stack --stack-name "$STACK_NAME" \
-      --use-previous-template \
-      --capabilities "$CAPABILITIES" \
-      --parameters \
-      ParameterKey=Architecture,ParameterValue="$ARCH" \
-      ParameterKey=PythonVersion,ParameterValue="$PY_VERSION" > /dev/null 2>&1
-    wait_stack
-  fi
+function deploy_stacks_to_region() {
+  local FIRST=1
+  local region=$1
+  local stack_id
+  for po in "${PLATFORMS[@]}"; do
+    echo "In region $r: $po"
+    read -r ARCH PY_VERSION <<< "$po"
+    if [ $FIRST -eq 1 ]; then
+      FIRST=0
+      CLEANUP_REGION=$region
+      CLEANUP_STACK_NAME=$STACK_NAME
+      # shellcheck disable=SC2086
+      stack_id=$(aws cloudformation create-stack \
+        --stack-name "$STACK_NAME" \
+        --template-body file://template.yaml \
+        --parameters \
+        ParameterKey=Architecture,ParameterValue="$ARCH" \
+        ParameterKey=PythonVersion,ParameterValue="$PY_VERSION" \
+        --region "$region" \
+        --capabilities $CAPABILITIES \
+        --output text \
+        --query 'StackId')
+      CLEANUP_STACK_NAME=$stack_id
+      wait_stack "$stack_id" "$region"
+    else
+      # shellcheck disable=SC2086
+      aws cloudformation update-stack --stack-name "$stack_id" \
+        --region "$region" \
+        --use-previous-template \
+        --capabilities $CAPABILITIES \
+        --parameters \
+        ParameterKey=Architecture,ParameterValue="$ARCH" \
+        ParameterKey=PythonVersion,ParameterValue="$PY_VERSION" >/dev/null
+      wait_stack "$stack_id" "$region"
+    fi
 
-  arn=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query 'Stacks[0].Outputs[?OutputKey==`LambdaFuncArn`].OutputValue' --output text)
-  aws lambda invoke --function-name "$arn" "$REGION-$PY_VERSION-$ARCH.json" > /dev/null 2>&1
+    arn=$(aws cloudformation describe-stacks --stack-name "$stack_id" --region "$region" --query 'Stacks[0].Outputs[?OutputKey==`LambdaFuncArn`].OutputValue' --output text)
+    aws lambda invoke --region $region --function-name "$arn" "$region-$PY_VERSION-$ARCH.json" >/dev/null
+  done
+  delete_stack "$stack_id" "$region"
+
+}
+for r in "${REGIONS[@]}"; do
+  deploy_stacks_to_region "$r"
 done
-
-cleanup
