@@ -1,11 +1,5 @@
 #!/usr/bin/env bash
 
-source .env
-
-trap cleanup INT
-CLEANING_UP=0
-CLEANUP_STACK_NAME=
-CLEANUP_REGION=
 function cleanup() {
   if [ $CLEANING_UP -eq 0 ]; then
     CLEANING_UP=1
@@ -15,9 +9,10 @@ function cleanup() {
     exit 1
   fi
 }
+
 function _cleanup() {
 
-  if [[ -n "$CLEANUP_STACK_NAME" ]]; then
+  if [[ -n $CLEANUP_STACK_NAME ]]; then
     wait_stack "$CLEANUP_STACK_NAME" "$CLEANUP_REGION"
     delete_stack "$CLEANUP_STACK_NAME" "$CLEANUP_REGION"
   fi
@@ -59,7 +54,7 @@ function deploy_stacks_to_region() {
   local stack_id
   for po in "${PLATFORMS[@]}"; do
     echo "In region $r: $po"
-    read -r ARCH PY_VERSION <<< "$po"
+    read -r ARCH PY_VERSION <<<"$po"
     if [ $FIRST -eq 1 ]; then
       FIRST=0
       CLEANUP_REGION=$region
@@ -95,6 +90,20 @@ function deploy_stacks_to_region() {
   delete_stack "$stack_id" "$region"
 
 }
-for r in "${REGIONS[@]}"; do
-  deploy_stacks_to_region "$r"
-done
+
+function main() {
+  source .env
+
+  trap cleanup INT
+
+  CLEANING_UP=0
+  CLEANUP_STACK_NAME=
+  CLEANUP_REGION=
+
+  for r in "${REGIONS[@]}"; do
+    deploy_stacks_to_region "$r"
+  done
+
+}
+
+main "$@"
